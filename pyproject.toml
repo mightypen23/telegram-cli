@@ -1,0 +1,18 @@
+[project]
+name = "telegram-cli"
+version = "1.0.0"
+description = "Feature-rich Telegram CLI for Fedora Linux"
+requires-python = ">=3.12"
+dependencies = [
+    "telethon>=1.45.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

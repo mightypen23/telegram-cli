@@ -1,0 +1,172 @@
+
+import asyncio
+import shlex
+from getpass import getpass
+
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError
+
+
+SESSION = "telegram_session"
+
+
+def display_name(dialog):
+    return (
+        dialog.name
+        or getattr(dialog.entity, "username", None)
+        or str(dialog.id)
+    )
+
+
+async def main():
+    api_id_text = input("Telegram API ID: ").strip()
+    api_hash = getpass("Telegram API hash: ").strip()
+
+    try:
+        api_id = int(api_id_text)
+    except ValueError:
+        print("API ID must be a number.")
+        return
+
+    client = TelegramClient(SESSION, api_id, api_hash)
+
+    try:
+        await client.start()
+        print("\nConnected to Telegram.")
+        print("Type 'help' to see commands.\n")
+
+        dialogs = []
+        current_chat = None
+
+        while True:
+            try:
+                command = input("telegram> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting.")
+                break
+
+            if not command:
+                continue
+
+            try:
+                parts = shlex.split(command)
+            except ValueError as exc:
+                print(f"Invalid command: {exc}")
+                continue
+
+            action = parts[0].lower()
+            args = parts[1:]
+
+            try:
+                if action in ("quit", "exit"):
+                    break
+
+                elif action == "help":
+                    print("""
+Commands:
+  chats                 List recent conversations
+  open INDEX            Open a chat from the list
+  open @username        Open a public username
+  history [COUNT]       Show recent messages
+  send MESSAGE          Send a message to the open chat
+  me                    Show your account
+  help                  Show commands
+  quit                  Exit
+""")
+
+                elif action == "me":
+                    me = await client.get_me()
+                    print(f"Name: {me.first_name or ''}")
+                    print(f"Username: @{me.username}" if me.username else "")
+                    print(f"ID: {me.id}")
+
+                elif action == "chats":
+                    dialogs = await client.get_dialogs(limit=50)
+
+                    for index, dialog in enumerate(dialogs, start=1):
+                        marker = "*" if dialog.unread_count else " "
+                        print(
+                            f"{index:>2}. {marker} "
+                            f"{display_name(dialog)} "
+                            f"(ID: {dialog.id})"
+                        )
+
+                    if not dialogs:
+                        print("No conversations found.")
+
+                elif action == "open":
+                    if not args:
+                        print("Usage: open INDEX or open @username")
+                        continue
+
+                    target = " ".join(args)
+
+                    if target.isdigit():
+                        index = int(target)
+                        if not 1 <= index <= len(dialogs):
+                            print("Invalid index. Run 'chats' first.")
+                            continue
+                        current_chat = dialogs[index - 1].entity
+                    else:
+                        current_chat = await client.get_entity(target)
+
+                    name = getattr(current_chat, "title", None)
+                    name = name or getattr(current_chat, "first_name", None)
+                    name = name or getattr(current_chat, "username", None)
+                    name = name or str(getattr(current_chat, "id", target))
+                    print(f"Opened: {name}")
+
+                elif action == "history":
+                    if current_chat is None:
+                        print("Open a chat first.")
+                        continue
+
+                    count = int(args[0]) if args else 20
+                    if not 1 <= count <= 100:
+                        print("Count must be between 1 and 100.")
+                        continue
+
+                    messages = await client.get_messages(
+                        current_chat, limit=count
+                    )
+
+                    for message in reversed(messages):
+                        sender = await message.get_sender()
+                        name = (
+                            getattr(sender, "first_name", None)
+                            or getattr(sender, "title", None)
+                            or "Unknown"
+                        ) if sender else "Unknown"
+
+                        body = message.message or "[media or non-text message]"
+                        print(f"{name}: {body}")
+
+                elif action == "send":
+                    if current_chat is None:
+                        print("Open a chat first.")
+                        continue
+
+                    message = " ".join(args)
+                    if not message:
+                        print("Usage: send Your message here")
+                        continue
+
+                    await client.send_message(current_chat, message)
+                    print("Message sent.")
+
+                else:
+                    print("Unknown command. Type 'help'.")
+
+            except FloodWaitError as exc:
+                print(f"Telegram rate limit: wait {exc.seconds} seconds.")
+            except (ValueError, TypeError) as exc:
+                print(f"Invalid input: {exc}")
+            except Exception as exc:
+                print(f"Error: {type(exc).__name__}: {exc}")
+
+    finally:
+        await client.disconnect()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
