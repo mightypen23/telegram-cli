@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -203,3 +203,39 @@ class TestProgressCallback:
         cb(1000, 1000)
         captured = capsys.readouterr()
         assert "100%" in captured.out
+
+
+class TestOpenFile:
+    """Test MediaService.open_file and subprocess xdg-open execution."""
+
+    @pytest.fixture
+    def service(self, tmp_path):
+        client = AsyncMock()
+        return MediaService(client, tmp_path / "downloads")
+
+    async def test_open_file_success(self, service, tmp_path):
+        entity = MagicMock()
+        target_file = tmp_path / "downloads" / "test.jpg"
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text("image content")
+
+        service.download_attachment = AsyncMock(return_value=target_file)
+
+        with patch("subprocess.Popen") as mock_popen:
+            result = await service.open_file(entity, 123)
+            assert result == target_file
+            mock_popen.assert_called_once()
+            args, kwargs = mock_popen.call_args
+            assert args[0] == ["xdg-open", str(target_file)]
+
+    async def test_open_file_missing_xdg_open(self, service, tmp_path):
+        entity = MagicMock()
+        target_file = tmp_path / "downloads" / "test.jpg"
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file.write_text("image content")
+
+        service.download_attachment = AsyncMock(return_value=target_file)
+
+        with patch("subprocess.Popen", side_effect=FileNotFoundError):
+            with pytest.raises(RuntimeError, match="xdg-open not found"):
+                await service.open_file(entity, 123)
