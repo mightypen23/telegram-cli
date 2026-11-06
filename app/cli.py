@@ -38,6 +38,7 @@ Messaging:
   channels [COUNT]                   List broadcast channels only
   archived [COUNT]                   List archived conversations
   open INDEX | FOLDER | @username    Open a chat from the list or by username
+  saved                              Open Saved Messages
   close                              Close the currently open chat
   history [COUNT]                    Show recent messages (default: from settings)
   send MESSAGE                       Send a message to the open chat
@@ -54,8 +55,8 @@ Media & Attachments:
   attach FILE [--caption TEXT]       Upload a file with optional caption/reply
          [--reply MSG_ID]            (paths with spaces must be quoted)
   attachments [COUNT]                List recent media in the open chat
-  download MSG_ID                    Download an attachment by message ID
-  view MSG_ID                        Download and open an attachment with xdg-open
+  download INDEX | MSG_ID            Download an attachment by index or message ID
+  view INDEX | MSG_ID                Download and open an attachment with xdg-open
 
 Local Settings:
   settings                           Show all local settings
@@ -103,6 +104,7 @@ class CLI:
         self._current_chat: Any = None
         self._current_chat_name: str = ""
         self._view_mode: str = "folders"
+        self._last_attachments: list[dict] = []
         self._running = True
 
         if hasattr(self._client, "add_event_handler"):
@@ -240,6 +242,7 @@ class CLI:
             "folder": self._cmd_folder,
             "folders": self._cmd_folder,
             "open": self._cmd_open,
+            "saved": self._cmd_saved,
             "close": self._cmd_close,
             "history": self._cmd_history,
             "send": self._cmd_send,
@@ -287,7 +290,11 @@ class CLI:
         name = self._current_chat_name
         self._current_chat = None
         self._current_chat_name = ""
+        self._last_attachments = []
         print(f"Closed chat: {name}")
+
+    async def _cmd_saved(self, args: list[str]) -> None:
+        await self._cmd_open(["saved"])
 
     async def _cmd_help(self, args: list[str]) -> None:
         print(HELP_TEXT)
@@ -451,11 +458,21 @@ class CLI:
 
     async def _cmd_open(self, args: list[str]) -> None:
         if not args:
-            print("Usage: open INDEX | FOLDER | @username")
+            print("Usage: open INDEX | FOLDER | @username | saved")
             return
 
         target = " ".join(args).strip()
         target_lower = target.lower()
+
+        if target_lower in ("saved", "saved messages", "saved_messages", "saved-messages", "me"):
+            entity, name = await self._messaging.open_chat("saved")
+            self._current_chat = entity
+            self._current_chat_name = name
+            self._view_mode = "chats"
+            self._last_attachments = []
+            print(f"Opened: {name}")
+            await self._cmd_history([])
+            return
 
         if target_lower in ("all chats", "all chat", "all"):
             await self._cmd_all_chats([])
@@ -486,6 +503,8 @@ class CLI:
         entity, name = await self._messaging.open_chat(target)
         self._current_chat = entity
         self._current_chat_name = name
+        self._view_mode = "chats"
+        self._last_attachments = []
         print(f"Opened: {name}")
 
     async def _cmd_history(self, args: list[str]) -> None:
@@ -605,6 +624,25 @@ class CLI:
         )
         print(f"File sent (ID: {msg_id}).")
 
+    async def _resolve_media_msg_id(self, val: int) -> int:
+        """
+        Resolve an attachment index (1-based) or message ID to a Telegram message ID.
+        """
+        if self._last_attachments and 1 <= val <= len(self._last_attachments):
+            return self._last_attachments[val - 1]["msg_id"]
+
+        if not self._last_attachments and self._current_chat is not None:
+            try:
+                atts = await self._media.get_attachments(self._current_chat, limit=30)
+                if atts:
+                    self._last_attachments = atts
+                    if 1 <= val <= len(self._last_attachments):
+                        return self._last_attachments[val - 1]["msg_id"]
+            except Exception:
+                pass
+
+        return val
+
     async def _cmd_attachments(self, args: list[str]) -> None:
         self._require_chat()
         limit = 30
@@ -624,20 +662,25 @@ class CLI:
         if not attachments:
             print("No attachments found.")
             return
-        for att in attachments:
-            print(self._media.format_attachment(att))
+        self._last_attachments = attachments
+        for idx, att in enumerate(attachments, start=1):
+            print(f"{idx:>3}. {self._media.format_attachment(att)}")
 
     async def _cmd_download(self, args: list[str]) -> None:
         self._require_chat()
         if not args:
-            print("Usage: download MSG_ID")
+            print("Usage: download INDEX | MSG_ID")
             return
         try:
-            msg_id = int(args[0])
+            val = int(args[0])
         except ValueError:
             print("MSG_ID must be a number.")
             return
+        if val <= 0:
+            print("MSG_ID must be a positive number.")
+            return
 
+        msg_id = await self._resolve_media_msg_id(val)
         path = await self._media.download_attachment(
             self._current_chat, msg_id
         )
@@ -646,15 +689,20 @@ class CLI:
     async def _cmd_view(self, args: list[str]) -> None:
         self._require_chat()
         if not args:
-            print("Usage: view MSG_ID")
+            print("Usage: view INDEX | MSG_ID")
             return
         try:
-            msg_id = int(args[0])
+            val = int(args[0])
         except ValueError:
             print("MSG_ID must be a number.")
             return
+        if val <= 0:
+            print("MSG_ID must be a positive number.")
+            return
 
+        msg_id = await self._resolve_media_msg_id(val)
         path = await self._media.open_file(self._current_chat, msg_id)
+        print(f"Downloaded: {path}")
         print(f"Opened: {path}")
 
     async def _cmd_settings(self, args: list[str]) -> None:

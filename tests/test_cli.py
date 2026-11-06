@@ -111,6 +111,42 @@ class TestCLIOpenAndSend:
         captured = capsys.readouterr()
         assert "Opened: Target Group" in captured.out
 
+    async def test_open_saved(self, cli, capsys):
+        me_entity = MagicMock()
+        me_entity.id = 12345
+        cli._client.get_entity = AsyncMock(return_value=me_entity)
+        cli._client.get_messages = AsyncMock(return_value=[])
+
+        await cli._dispatch("open", ["saved"])
+        assert cli._current_chat == me_entity
+        assert cli._current_chat_name == "Saved Messages"
+        captured = capsys.readouterr()
+        assert "Opened: Saved Messages" in captured.out
+
+    async def test_open_saved_messages(self, cli, capsys):
+        me_entity = MagicMock()
+        me_entity.id = 12345
+        cli._client.get_entity = AsyncMock(return_value=me_entity)
+        cli._client.get_messages = AsyncMock(return_value=[])
+
+        await cli._dispatch("open", ["saved", "messages"])
+        assert cli._current_chat == me_entity
+        assert cli._current_chat_name == "Saved Messages"
+        captured = capsys.readouterr()
+        assert "Opened: Saved Messages" in captured.out
+
+    async def test_saved_command(self, cli, capsys):
+        me_entity = MagicMock()
+        me_entity.id = 12345
+        cli._client.get_entity = AsyncMock(return_value=me_entity)
+        cli._client.get_messages = AsyncMock(return_value=[])
+
+        await cli._dispatch("saved", [])
+        assert cli._current_chat == me_entity
+        assert cli._current_chat_name == "Saved Messages"
+        captured = capsys.readouterr()
+        assert "Opened: Saved Messages" in captured.out
+
     async def test_send_message(self, cli, capsys):
         cli._current_chat = MagicMock()
         cli._current_chat_name = "Test Chat"
@@ -339,6 +375,74 @@ class TestCLIAttachmentsAndDownload:
         await cli._dispatch("view", ["50"])
         captured = capsys.readouterr()
         assert f"Opened: {fake_path}" in captured.out
+
+    async def test_view_by_index_with_cached_attachments(self, cli, capsys, tmp_path):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        fake_path = tmp_path / "view1.txt"
+        cli._media.open_file = AsyncMock(return_value=fake_path)
+        cli._last_attachments = [
+            {"msg_id": 105063, "filename": "photo.jpg"},
+            {"msg_id": 105064, "filename": "video.mp4"},
+        ]
+
+        await cli._dispatch("view", ["1"])
+        cli._media.open_file.assert_called_once_with(cli._current_chat, 105063)
+        captured = capsys.readouterr()
+        assert f"Downloaded: {fake_path}" in captured.out
+        assert f"Opened: {fake_path}" in captured.out
+
+    async def test_view_by_index_without_cached_attachments(self, cli, capsys, tmp_path):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        fake_path = tmp_path / "view2.txt"
+        cli._media.open_file = AsyncMock(return_value=fake_path)
+        cli._media.get_attachments = AsyncMock(
+            return_value=[
+                {"msg_id": 9999, "filename": "doc.pdf"},
+            ]
+        )
+
+        await cli._dispatch("view", ["1"])
+        cli._media.open_file.assert_called_once_with(cli._current_chat, 9999)
+        captured = capsys.readouterr()
+        assert f"Downloaded: {fake_path}" in captured.out
+        assert f"Opened: {fake_path}" in captured.out
+
+    async def test_download_by_index_with_cached_attachments(self, cli, capsys, tmp_path):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        fake_path = tmp_path / "dl1.txt"
+        cli._media.download_attachment = AsyncMock(return_value=fake_path)
+        cli._last_attachments = [
+            {"msg_id": 777, "filename": "photo.jpg"},
+        ]
+
+        await cli._dispatch("download", ["1"])
+        cli._media.download_attachment.assert_called_once_with(cli._current_chat, 777)
+        captured = capsys.readouterr()
+        assert f"Downloaded: {fake_path}" in captured.out
+
+    async def test_view_invalid_id(self, cli, capsys):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        await cli._dispatch("view", ["abc"])
+        captured = capsys.readouterr()
+        assert "MSG_ID must be a number" in captured.out
+
+    async def test_view_negative_id(self, cli, capsys):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        await cli._dispatch("view", ["-5"])
+        captured = capsys.readouterr()
+        assert "MSG_ID must be a positive number" in captured.out
+
+    async def test_download_negative_id(self, cli, capsys):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Test Chat"
+        await cli._dispatch("download", ["0"])
+        captured = capsys.readouterr()
+        assert "MSG_ID must be a positive number" in captured.out
 
 
 class TestCLIPrivacyAndNotifications:

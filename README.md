@@ -67,14 +67,15 @@ To clear saved credentials at any time, run the `logout` command inside the CLI.
 | `folder add FOLDER TARGETS...` | Mass add chats to a folder (e.g. `folder add Work 1 2 3`) |
 | `folder remove FOLDER TARGETS...` | Mass remove chats from a folder (e.g. `folder remove Work 1 2`) |
 | `open INDEX` or `open @username` | Open a chat conversation for live messaging |
+| `open saved` / `saved` | Open Saved Messages to see saved messages |
 | `close` | Close the currently open chat |
 | `history [COUNT]` | Show recent messages with IDs |
 | `send MESSAGE` | Send a message |
 | `reply MSG_ID MESSAGE` | Reply to a specific message |
 | `attach "/path/to/file" [--caption TEXT] [--reply MSG_ID]` | Upload a file |
 | `attachments [COUNT]` | List recent media attachments |
-| `download MSG_ID` | Download an attachment |
-| `view MSG_ID` | Download and open an attachment |
+| `download INDEX | MSG_ID` | Download an attachment by 1-based index or message ID |
+| `view INDEX | MSG_ID` | Download and open an attachment with xdg-open by 1-based index or message ID |
 | `settings` | Show current settings |
 | `settings set KEY VALUE` | Change a setting |
 | `settings reset KEY` | Reset a setting to default |

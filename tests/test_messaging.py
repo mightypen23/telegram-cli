@@ -69,6 +69,12 @@ class TestFormatMessage:
 class TestDisplayName:
     """Test entity display name extraction."""
 
+    def test_with_is_self(self):
+        entity = MagicMock()
+        entity.is_self = True
+        entity.first_name = "Self"
+        assert MessagingService.display_name_for_entity(entity) == "Saved Messages"
+
     def test_with_title(self):
         entity = MagicMock()
         entity.title = "My Group"
@@ -153,6 +159,32 @@ class TestOpenChat:
         entity, name = await service.open_chat("1")
         assert entity == d1.entity
         assert name == "Group Chat"
+
+    async def test_open_saved_messages(self, service):
+        me_entity = MagicMock()
+        me_entity.id = 12345
+        service._client.get_entity = AsyncMock(return_value=me_entity)
+
+        entity, name = await service.open_chat("saved")
+        assert entity == me_entity
+        assert name == "Saved Messages"
+
+        entity2, name2 = await service.open_chat("saved messages")
+        assert entity2 == me_entity
+        assert name2 == "Saved Messages"
+
+        entity3, name3 = await service.open_chat("me")
+        assert entity3 == me_entity
+        assert name3 == "Saved Messages"
+
+    async def test_resolve_target_saved(self, service):
+        me_entity = MagicMock()
+        me_entity.id = 12345
+        service._client.get_entity = AsyncMock(return_value=me_entity)
+
+        entity, name = await service.resolve_target("saved")
+        assert entity == me_entity
+        assert name == "Saved Messages"
 
 
 class TestSendMessageValidation:
