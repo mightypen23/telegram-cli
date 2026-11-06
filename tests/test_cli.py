@@ -469,3 +469,288 @@ class TestCLILogout:
                 await cli._dispatch("logout", [])
         captured = capsys.readouterr()
         assert "No saved credentials file was found" in captured.out
+
+
+class TestCLIChatsAndFolders:
+    """Test folder listing, switching, and opening chats."""
+
+    async def test_chats_shows_folders(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=0, name="All chats", is_default=True)
+        f2 = FolderInfo(id=2, name="Work", emoticon="💼")
+        f3 = FolderInfo(id=1, name="Archived", is_archived=True)
+        cli._messaging.get_folders = AsyncMock(return_value=[f1, f2, f3])
+
+        await cli._dispatch("chats", [])
+        captured = capsys.readouterr()
+        assert "Chat Folders:" in captured.out
+        assert "All chats (All conversations)" in captured.out
+        assert "💼 Work" in captured.out
+        assert "Archived (Archived chats)" in captured.out
+        assert cli._view_mode == "folders"
+
+    async def test_chats_all(self, cli, capsys):
+        d1 = MagicMock()
+        d1.name = "Alice"
+        d1.id = 101
+        d1.unread_count = 1
+        cli._messaging.get_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("chats", ["all"])
+        captured = capsys.readouterr()
+        assert "All Chats (1):" in captured.out
+        assert "* Alice" in captured.out
+        assert cli._view_mode == "chats"
+
+    async def test_all_chats_dispatch(self, cli, capsys):
+        d1 = MagicMock()
+        d1.name = "Bob"
+        d1.id = 102
+        d1.unread_count = 0
+        cli._messaging.get_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("all", ["chats"])
+        captured = capsys.readouterr()
+        assert "All Chats (1):" in captured.out
+        assert "Bob" in captured.out
+
+    async def test_open_folder_by_index_in_folder_mode(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=0, name="All chats", is_default=True)
+        f2 = FolderInfo(id=2, name="Work")
+        cli._messaging._folders = [f1, f2]
+        cli._view_mode = "folders"
+
+        d1 = MagicMock()
+        d1.name = "Work Chat"
+        d1.id = 201
+        d1.unread_count = 0
+        cli._messaging.get_folder_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("open", ["2"])
+        captured = capsys.readouterr()
+        assert "Chats in 'Work' (1):" in captured.out
+        assert "Work Chat" in captured.out
+        assert cli._view_mode == "chats"
+
+    async def test_open_folder_by_name(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=0, name="All chats", is_default=True)
+        f2 = FolderInfo(id=2, name="Work")
+        cli._messaging._folders = [f1, f2]
+
+        d1 = MagicMock()
+        d1.name = "Work Chat"
+        d1.id = 201
+        d1.unread_count = 0
+        cli._messaging.get_folder_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("open", ["Work"])
+        captured = capsys.readouterr()
+        assert "Chats in 'Work' (1):" in captured.out
+
+    async def test_open_chat_in_chat_mode(self, cli, capsys):
+        cli._view_mode = "chats"
+        entity = MagicMock()
+        entity.title = "Target Chat"
+        cli._messaging.open_chat = AsyncMock(return_value=(entity, "Target Chat"))
+
+        await cli._dispatch("open", ["1"])
+        captured = capsys.readouterr()
+        assert "Opened: Target Chat" in captured.out
+        assert cli._current_chat == entity
+
+
+class TestCLIChannelsAndArchived:
+    """Test channels and archived commands."""
+
+    async def test_channels_command(self, cli, capsys):
+        ch1 = MagicMock()
+        ch1.name = "Python News"
+        ch1.id = -1001
+        ch1.unread_count = 2
+        cli._messaging.get_channels = AsyncMock(return_value=[ch1])
+
+        await cli._dispatch("channels", [])
+        captured = capsys.readouterr()
+        assert "Channels (1):" in captured.out
+        assert "* Python News" in captured.out
+        assert cli._view_mode == "chats"
+
+    async def test_channels_empty(self, cli, capsys):
+        cli._messaging.get_channels = AsyncMock(return_value=[])
+
+        await cli._dispatch("channels", [])
+        captured = capsys.readouterr()
+        assert "No channels found." in captured.out
+
+    async def test_archived_command(self, cli, capsys):
+        d1 = MagicMock()
+        d1.name = "Archived Group"
+        d1.id = -1002
+        d1.unread_count = 0
+        cli._messaging.get_archived_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("archived", [])
+        captured = capsys.readouterr()
+        assert "Archived Chats (1):" in captured.out
+        assert "Archived Group" in captured.out
+        assert cli._view_mode == "chats"
+
+    async def test_archived_empty(self, cli, capsys):
+        cli._messaging.get_archived_dialogs = AsyncMock(return_value=[])
+
+        await cli._dispatch("archived", [])
+        captured = capsys.readouterr()
+        assert "No archived conversations found." in captured.out
+
+
+class TestCLIMassArchiveAndUnarchive:
+    """Test archive and unarchive commands."""
+
+    async def test_archive_success(self, cli, capsys):
+        cli._messaging.archive_chats = AsyncMock(return_value=["Alice", "Bob"])
+
+        await cli._dispatch("archive", ["1", "2"])
+        captured = capsys.readouterr()
+        assert "Archived 2 chat(s): Alice, Bob" in captured.out
+        cli._messaging.archive_chats.assert_called_once_with(["1", "2"])
+
+    async def test_archive_missing_args(self, cli, capsys):
+        await cli._dispatch("archive", [])
+        captured = capsys.readouterr()
+        assert "Usage: archive" in captured.out
+
+    async def test_unarchive_success(self, cli, capsys):
+        cli._messaging.unarchive_chats = AsyncMock(return_value=["Alice"])
+
+        await cli._dispatch("unarchive", ["1"])
+        captured = capsys.readouterr()
+        assert "Unarchived 1 chat(s): Alice" in captured.out
+        cli._messaging.unarchive_chats.assert_called_once_with(["1"])
+
+    async def test_unarchive_missing_args(self, cli, capsys):
+        await cli._dispatch("unarchive", [])
+        captured = capsys.readouterr()
+        assert "Usage: unarchive" in captured.out
+
+
+class TestCLIFolderCommand:
+    """Test folder command with subcommands."""
+
+    async def test_folder_list(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=0, name="All chats", is_default=True)
+        cli._messaging.get_folders = AsyncMock(return_value=[f1])
+
+        await cli._dispatch("folder", [])
+        captured = capsys.readouterr()
+        assert "Chat Folders:" in captured.out
+
+    async def test_folder_add_success(self, cli, capsys):
+        cli._messaging.add_to_folder = AsyncMock(
+            return_value=("Work", ["Alice", "Bob"])
+        )
+
+        await cli._dispatch("folder", ["add", "Work", "1", "2"])
+        captured = capsys.readouterr()
+        assert "Added 2 chat(s) to 'Work': Alice, Bob" in captured.out
+
+    async def test_folder_add_missing_args(self, cli, capsys):
+        await cli._dispatch("folder", ["add", "Work"])
+        captured = capsys.readouterr()
+        assert "Usage: folder add" in captured.out
+
+    async def test_folder_remove_success(self, cli, capsys):
+        cli._messaging.remove_from_folder = AsyncMock(
+            return_value=("Work", ["Alice"])
+        )
+
+        await cli._dispatch("folder", ["remove", "Work", "1"])
+        captured = capsys.readouterr()
+        assert "Removed 1 chat(s) from 'Work': Alice" in captured.out
+
+    async def test_folder_remove_missing_args(self, cli, capsys):
+        await cli._dispatch("folder", ["remove"])
+        captured = capsys.readouterr()
+        assert "Usage: folder remove" in captured.out
+
+
+class TestCLIRealtimeChatting:
+    """Test real-time message receiving for open chats."""
+
+    async def test_on_new_message_no_chat_open(self, cli, capsys):
+        event = MagicMock()
+        event.out = False
+        event.chat_id = 12345
+        await cli._on_new_message(event)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    async def test_on_new_message_outgoing_ignored(self, cli, capsys):
+        chat = MagicMock()
+        chat.id = 12345
+        cli._current_chat = chat
+        cli._current_chat_name = "Alice"
+
+        event = MagicMock()
+        event.out = True
+        event.chat_id = 12345
+        await cli._on_new_message(event)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    async def test_on_new_message_different_chat_ignored(self, cli, capsys):
+        chat = MagicMock()
+        chat.id = 12345
+        cli._current_chat = chat
+        cli._current_chat_name = "Alice"
+
+        event = MagicMock()
+        event.out = False
+        event.chat_id = 99999
+        await cli._on_new_message(event)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    async def test_on_new_message_matching_chat_displayed(self, cli, capsys):
+        from telethon.tl import types
+        chat = types.User(id=12345)
+        cli._current_chat = chat
+        cli._current_chat_name = "Alice"
+
+        event = MagicMock()
+        event.out = False
+        event.chat_id = 12345
+        event.message = MagicMock()
+        event.message.id = 77
+        event.message.message = "Hello in real time!"
+        event.message.date = None
+        event.message.reply_to = None
+        event.message.media = None
+        sender = MagicMock()
+        sender.title = None
+        sender.first_name = "Alice"
+        sender.last_name = None
+        sender.username = None
+        event.message.get_sender = AsyncMock(return_value=sender)
+
+        await cli._on_new_message(event)
+        captured = capsys.readouterr()
+        assert "[77] Alice (??:??): Hello in real time!" in captured.out
+
+    async def test_close_command(self, cli, capsys):
+        cli._current_chat = MagicMock()
+        cli._current_chat_name = "Alice"
+
+        await cli._dispatch("close", [])
+        captured = capsys.readouterr()
+        assert "Closed chat: Alice" in captured.out
+        assert cli._current_chat is None
+        assert cli._current_chat_name == ""
+
+    async def test_close_command_when_no_chat(self, cli, capsys):
+        cli._current_chat = None
+        await cli._dispatch("close", [])
+        captured = capsys.readouterr()
+        assert "No chat is currently open." in captured.out

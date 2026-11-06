@@ -8,27 +8,47 @@ All Telegram API calls are delegated to the service modules.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import shlex
+import sys
 from typing import Any
 
-from telethon import TelegramClient
+from telethon import TelegramClient, events, utils
 from telethon.errors import FloodWaitError
 
 from app.config import Config
+from app.services.ai import AIAssistantService
+from app.services.bot import AIBotService
 from app.services.media import MediaService
-from app.services.messaging import MessagingService
+from app.services.messaging import MessagingService, parse_chat_targets
 from app.services.settings import SettingsService
 
 
 HELP_TEXT = """\
 Telegram CLI - Available Commands:
 
+AI Assistant:
+  ai PROMPT...                       Ask the local AI assistant to manage chats, search, or draft
+  bot [status|start|stop]            Manage the personal AI Telegram bot
+
 Messaging:
-  chats                              List recent conversations
-  open INDEX | @username             Open a chat from the list or by username
+  chats                              List chat folders
+  all chats                          List all conversations
+  channels [COUNT]                   List broadcast channels only
+  archived [COUNT]                   List archived conversations
+  open INDEX | FOLDER | @username    Open a chat from the list or by username
+  close                              Close the currently open chat
   history [COUNT]                    Show recent messages (default: from settings)
   send MESSAGE                       Send a message to the open chat
   reply MSG_ID MESSAGE               Reply to a specific message in the open chat
+
+Folders & Archiving:
+  folder                             List chat folders
+  folder add FOLDER CHATS...         Mass add chats to a folder (e.g. folder add Work 1 2 3)
+  folder remove FOLDER CHATS...      Mass remove chats from a folder
+  archive CHATS...                   Mass archive chats (e.g. archive 1 2 3, archive 1-5, all)
+  unarchive CHATS...                 Mass unarchive chats (e.g. unarchive 1 2 3, all)
 
 Media & Attachments:
   attach FILE [--caption TEXT]       Upload a file with optional caption/reply
@@ -65,16 +85,35 @@ class CLI:
         self,
         client: TelegramClient,
         config: Config,
+        bot_service: AIBotService | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._messaging = MessagingService(client)
         self._media = MediaService(client, config.get_download_path())
         self._settings = SettingsService(config)
+        self._ai = AIAssistantService(
+            self._messaging,
+            ollama_url=config.ollama_url,
+            model=config.ai_model,
+            draft_first=config.ai_draft_first,
+        )
+        self._bot = bot_service
 
         self._current_chat: Any = None
         self._current_chat_name: str = ""
+        self._view_mode: str = "folders"
         self._running = True
+
+        if hasattr(self._client, "add_event_handler"):
+            try:
+                res = self._client.add_event_handler(
+                    self._on_new_message, events.NewMessage
+                )
+                if inspect.iscoroutine(res):
+                    res.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     #  Main loop
@@ -91,7 +130,8 @@ class CLI:
                     if self._current_chat_name
                     else "telegram> "
                 )
-                command = input(prompt).strip()
+                command = await self._async_input(prompt)
+                command = command.strip()
             except (EOFError, KeyboardInterrupt):
                 print("\nExiting.")
                 break
@@ -121,19 +161,86 @@ class CLI:
             except Exception as exc:
                 print(f"Error: {type(exc).__name__}: {exc}")
 
+    async def _async_input(self, prompt: str) -> str:
+        """Read user input asynchronously so event handlers can run."""
+        return await asyncio.to_thread(input, prompt)
+
+    def _print_live_message(self, text: str) -> None:
+        """Print an incoming message in real time without breaking prompt display."""
+        prompt = (
+            f"telegram [{self._current_chat_name}]> "
+            if self._current_chat_name
+            else "telegram> "
+        )
+
+        current_buffer = ""
+        try:
+            import readline
+            current_buffer = readline.get_line_buffer() or ""
+        except Exception:
+            pass
+
+        if sys.stdout.isatty():
+            sys.stdout.write(f"\r\033[K{text}\n{prompt}{current_buffer}")
+            sys.stdout.flush()
+        else:
+            print(text)
+
+    async def _on_new_message(self, event: Any) -> None:
+        """Handle incoming real-time messages for the open chat."""
+        if not self._current_chat or getattr(event, "out", False):
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        if chat_id is None:
+            return
+
+        try:
+            current_chat_id = utils.get_peer_id(self._current_chat)
+        except Exception:
+            current_chat_id = getattr(self._current_chat, "id", None)
+
+        if chat_id != current_chat_id:
+            return
+
+        message = getattr(event, "message", None)
+        if not message:
+            return
+
+        msg_dict = await self._messaging.message_to_dict(message)
+        if not msg_dict:
+            return
+
+        formatted = self._messaging.format_message(msg_dict)
+        self._print_live_message(formatted)
+
     # ------------------------------------------------------------------ #
     #  Command dispatch
     # ------------------------------------------------------------------ #
 
     async def _dispatch(self, action: str, args: list[str]) -> None:
         """Route a parsed command to its handler."""
+        if action in ("all", "all chats", "allchats", "all-chats"):
+            if args and args[0].lower() in ("chats", "chat"):
+                args = args[1:]
+            await self._cmd_all_chats(args)
+            return
+
         handlers = {
             "quit": self._cmd_quit,
             "exit": self._cmd_quit,
             "help": self._cmd_help,
             "me": self._cmd_me,
             "chats": self._cmd_chats,
+            "all": self._cmd_all_chats,
+            "channels": self._cmd_channels,
+            "archived": self._cmd_archived,
+            "archive": self._cmd_archive,
+            "unarchive": self._cmd_unarchive,
+            "folder": self._cmd_folder,
+            "folders": self._cmd_folder,
             "open": self._cmd_open,
+            "close": self._cmd_close,
             "history": self._cmd_history,
             "send": self._cmd_send,
             "reply": self._cmd_reply,
@@ -146,6 +253,8 @@ class CLI:
             "privacy": self._cmd_privacy,
             "notifications": self._cmd_notifications,
             "logout": self._cmd_logout,
+            "ai": self._cmd_ai,
+            "bot": self._cmd_bot,
         }
 
         handler = handlers.get(action)
@@ -161,6 +270,24 @@ class CLI:
 
     async def _cmd_quit(self, args: list[str]) -> None:
         self._running = False
+        if hasattr(self._client, "remove_event_handler"):
+            try:
+                res = self._client.remove_event_handler(
+                    self._on_new_message, events.NewMessage
+                )
+                if inspect.iscoroutine(res):
+                    res.close()
+            except Exception:
+                pass
+
+    async def _cmd_close(self, args: list[str]) -> None:
+        if self._current_chat is None:
+            print("No chat is currently open.")
+            return
+        name = self._current_chat_name
+        self._current_chat = None
+        self._current_chat_name = ""
+        print(f"Closed chat: {name}")
 
     async def _cmd_help(self, args: list[str]) -> None:
         print(HELP_TEXT)
@@ -172,28 +299,190 @@ class CLI:
         print(f"Username: @{me.username}" if me.username else "")
         print(f"ID: {me.id}")
 
+    def _print_dialogs(self, dialogs: list[Any]) -> None:
+        for idx, dialog in enumerate(dialogs, start=1):
+            marker = "*" if getattr(dialog, "unread_count", 0) else " "
+            name = (
+                getattr(dialog, "name", None)
+                or getattr(getattr(dialog, "entity", None), "username", None)
+                or str(getattr(dialog, "id", "Unknown"))
+            )
+            print(f"{idx:>3}. {marker} {name} (ID: {getattr(dialog, 'id', '')})")
+
+    async def _display_folders(self) -> None:
+        folders = await self._messaging.get_folders()
+        if not folders:
+            print("No chat folders found.")
+            return
+        self._view_mode = "folders"
+        print("Chat Folders:")
+        for idx, f in enumerate(folders, start=1):
+            tag = ""
+            if f.is_default:
+                tag = " (All conversations)"
+            elif f.is_archived:
+                tag = " (Archived chats)"
+            emoji = f"{f.emoticon} " if f.emoticon else ""
+            print(f"{idx:>3}. {emoji}{f.name}{tag}")
+        print(
+            "\nType 'open <folder>' or 'open <index>' to view chats in a folder (e.g. 'open 1' or 'open Work')."
+        )
+        print("Type 'all chats' to view all chats directly.")
+
     async def _cmd_chats(self, args: list[str]) -> None:
+        if args and args[0].lower() in ("all", "--all"):
+            await self._cmd_all_chats(args[1:])
+            return
+        await self._display_folders()
+
+    async def _cmd_all_chats(self, args: list[str]) -> None:
         limit = 50
         if args and args[0].isdigit():
             limit = int(args[0])
-        dialogs = await self._messaging.get_dialogs(limit=limit)
+        elif args and len(args) > 1 and args[1].isdigit():
+            limit = int(args[1])
+        dialogs = await self._messaging.get_dialogs(limit=limit, folder=0)
         if not dialogs:
             print("No conversations found.")
             return
-        for idx, dialog in enumerate(dialogs, start=1):
-            marker = "*" if dialog.unread_count else " "
-            name = (
-                dialog.name
-                or getattr(dialog.entity, "username", None)
-                or str(dialog.id)
+        self._view_mode = "chats"
+        print(f"All Chats ({len(dialogs)}):")
+        self._print_dialogs(dialogs)
+
+    async def _cmd_channels(self, args: list[str]) -> None:
+        limit = 50
+        if args and args[0].isdigit():
+            limit = int(args[0])
+        channels = await self._messaging.get_channels(limit=limit)
+        if not channels:
+            print("No channels found.")
+            return
+        self._view_mode = "chats"
+        print(f"Channels ({len(channels)}):")
+        self._print_dialogs(channels)
+
+    async def _cmd_archived(self, args: list[str]) -> None:
+        limit = 50
+        if args and args[0].isdigit():
+            limit = int(args[0])
+        dialogs = await self._messaging.get_archived_dialogs(limit=limit)
+        if not dialogs:
+            print("No archived conversations found.")
+            return
+        self._view_mode = "chats"
+        print(f"Archived Chats ({len(dialogs)}):")
+        self._print_dialogs(dialogs)
+
+    async def _cmd_archive(self, args: list[str]) -> None:
+        if not args:
+            print("Usage: archive INDEX... | @username... | all")
+            return
+        targets = parse_chat_targets(args)
+        if not targets:
+            print("Usage: archive INDEX... | @username... | all")
+            return
+        names = await self._messaging.archive_chats(targets)
+        print(f"Archived {len(names)} chat(s): {', '.join(names)}")
+
+    async def _cmd_unarchive(self, args: list[str]) -> None:
+        if not args:
+            print("Usage: unarchive INDEX... | @username... | all")
+            return
+        targets = parse_chat_targets(args)
+        if not targets:
+            print("Usage: unarchive INDEX... | @username... | all")
+            return
+        names = await self._messaging.unarchive_chats(targets)
+        print(f"Unarchived {len(names)} chat(s): {', '.join(names)}")
+
+    async def _cmd_folder(self, args: list[str]) -> None:
+        if not args or args[0].lower() in ("list", "show"):
+            await self._display_folders()
+            return
+
+        subcmd = args[0].lower()
+        if subcmd == "add":
+            if len(args) < 3:
+                print("Usage: folder add FOLDER_NAME_OR_INDEX CHATS...")
+                return
+            folder_target = args[1]
+            chat_targets = parse_chat_targets(args[2:])
+            folder_name, names = await self._messaging.add_to_folder(
+                folder_target, chat_targets
             )
-            print(f"{idx:>3}. {marker} {name} (ID: {dialog.id})")
+            print(
+                f"Added {len(names)} chat(s) to '{folder_name}': {', '.join(names)}"
+            )
+
+        elif subcmd == "remove":
+            if len(args) < 3:
+                print("Usage: folder remove FOLDER_NAME_OR_INDEX CHATS...")
+                return
+            folder_target = args[1]
+            chat_targets = parse_chat_targets(args[2:])
+            folder_name, names = await self._messaging.remove_from_folder(
+                folder_target, chat_targets
+            )
+            print(
+                f"Removed {len(names)} chat(s) from '{folder_name}': {', '.join(names)}"
+            )
+
+        else:
+            print(
+                "Usage: folder | folder list | folder add FOLDER CHATS... | folder remove FOLDER CHATS..."
+            )
+
+    async def _open_folder(self, folder_target: str) -> None:
+        folder = self._messaging.find_folder(folder_target)
+        if folder.is_default:
+            await self._cmd_all_chats([])
+            return
+        if folder.is_archived:
+            await self._cmd_archived([])
+            return
+
+        dialogs = await self._messaging.get_folder_dialogs(folder)
+        if not dialogs:
+            print(f"No chats found in folder '{folder.name}'.")
+            return
+        self._view_mode = "chats"
+        print(f"Chats in '{folder.name}' ({len(dialogs)}):")
+        self._print_dialogs(dialogs)
 
     async def _cmd_open(self, args: list[str]) -> None:
         if not args:
-            print("Usage: open INDEX  or  open @username")
+            print("Usage: open INDEX | FOLDER | @username")
             return
-        target = " ".join(args)
+
+        target = " ".join(args).strip()
+        target_lower = target.lower()
+
+        if target_lower in ("all chats", "all chat", "all"):
+            await self._cmd_all_chats([])
+            return
+
+        if target_lower.startswith("folder "):
+            folder_arg = target[7:].strip()
+            await self._open_folder(folder_arg)
+            return
+
+        # If in folders mode and target is an integer: open that folder
+        if (
+            self._view_mode == "folders"
+            and target.isdigit()
+            and self._messaging.folders
+        ):
+            await self._open_folder(target)
+            return
+
+        # If target matches a known folder name: open that folder
+        if self._messaging.folders:
+            matched_folder = self._messaging.find_folder_by_name(target)
+            if matched_folder is not None:
+                await self._open_folder(matched_folder.name)
+                return
+
+        # Otherwise open chat
         entity, name = await self._messaging.open_chat(target)
         self._current_chat = entity
         self._current_chat_name = name
@@ -524,6 +813,94 @@ class CLI:
             print("Saved credentials removed. You will be prompted on next launch.")
         else:
             print("No saved credentials file was found.")
+
+    async def _cmd_ai(self, args: list[str]) -> None:
+        """Query the local AI assistant to search chats, draft messages, etc."""
+        if args and args[0].lower() in ("clear", "reset"):
+            self._ai.clear_session_history("cli")
+            print("AI conversation memory cleared.")
+            return
+
+        if not args:
+            prompt = await self._async_input("AI prompt: ")
+            prompt = prompt.strip()
+            if not prompt:
+                return
+        else:
+            prompt = " ".join(args)
+
+        print(f"Thinking with {self._config.ai_model}...")
+        chat_context = f"Open chat: {self._current_chat_name}" if self._current_chat_name else None
+        response = await self._ai.ask(
+            prompt,
+            chat_context=chat_context,
+            session_id="cli",
+        )
+
+        if response.draft:
+            print("\n📝 Message Draft:")
+            print(f"  To: {response.draft.recipient}")
+            print(f"  Message: {response.draft.message}")
+            try:
+                confirm = (await self._async_input("\nSend this message? [y/N]: ")).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                confirm = "n"
+            if confirm in ("y", "yes"):
+                success, msg = await self._ai.confirm_draft(response.draft.id)
+                print(msg)
+            else:
+                self._ai.cancel_draft(response.draft.id)
+                print("Draft cancelled.")
+        else:
+            print(f"\n{response.text}\n")
+
+    async def _cmd_bot(self, args: list[str]) -> None:
+        """Manage the AI Telegram bot service."""
+        sub = args[0].lower() if args else "status"
+
+        if sub == "status":
+            if self._bot and self._bot.is_running:
+                print(f"AI Bot is ONLINE: @{self._bot.bot_username} (Model: {self._config.ai_model})")
+            else:
+                print("AI Bot is OFFLINE. Run 'bot start' to launch it.")
+
+        elif sub == "start":
+            from app.credentials import load_bot_token, load_credentials, save_bot_token
+
+            if self._bot and self._bot.is_running:
+                print(f"AI Bot is already running: @{self._bot.bot_username}")
+                return
+
+            token = load_bot_token()
+            if not token:
+                token = (await self._async_input("Telegram Bot Token (from @BotFather): ")).strip()
+                if not token:
+                    print("Bot token cannot be empty.")
+                    return
+                save_bot_token(token)
+
+            creds = load_credentials()
+            if not creds:
+                print("User API credentials required.")
+                return
+
+            api_id, api_hash = creds
+            bot_client = TelegramClient("bot_session", api_id, api_hash)
+            self._bot = AIBotService(bot_client, self._client, self._ai)
+            try:
+                await self._bot.start(token)
+                print(f"AI Bot started: @{self._bot.bot_username} (Owner: @{self._bot.owner_username})")
+            except Exception as exc:
+                print(f"Failed to start bot: {exc}")
+
+        elif sub == "stop":
+            if self._bot and self._bot.is_running:
+                await self._bot.stop()
+                print("AI Bot stopped.")
+            else:
+                print("AI Bot is not running.")
+        else:
+            print("Usage: bot [status|start|stop]")
 
     # ------------------------------------------------------------------ #
     #  Helpers

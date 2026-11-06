@@ -86,3 +86,19 @@ class TestCommandParsing:
     def test_tab_characters(self):
         parts = shlex.split("send\tHello\tworld")
         assert parts == ["send", "Hello", "world"]
+
+    def test_folder_add_quoted_name(self):
+        parts = shlex.split('folder add "Work Chats" 1 2 3')
+        assert parts == ["folder", "add", "Work Chats", "1", "2", "3"]
+
+    def test_folder_remove_range(self):
+        parts = shlex.split('folder remove Work 1-3')
+        assert parts == ["folder", "remove", "Work", "1-3"]
+
+    def test_mass_archive_args(self):
+        parts = shlex.split("archive 1 2 3 @channel")
+        assert parts == ["archive", "1", "2", "3", "@channel"]
+
+    def test_open_quoted_folder(self):
+        parts = shlex.split('open "All chats"')
+        assert parts == ["open", "All chats"]

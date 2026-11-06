@@ -63,7 +63,7 @@ class TestGetValidKeys:
     def test_returns_list(self, service):
         keys = service.get_valid_keys()
         assert isinstance(keys, list)
-        assert len(keys) == 4
+        assert len(keys) == 7
         assert all(isinstance(k, str) for k in keys)
 
 

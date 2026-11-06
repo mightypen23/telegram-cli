@@ -32,6 +32,9 @@ class Config:
     history_limit: int = 20
     confirm_before_send: bool = False
     theme: str = "default"
+    ollama_url: str = "http://localhost:11434"
+    ai_model: str = "qwen2.5:3b"
+    ai_draft_first: bool = True
 
     # Internal path to config file for persistence (not serialized)
     _config_file: Path | None = field(
@@ -48,6 +51,9 @@ class Config:
             "history_limit": 20,
             "confirm_before_send": False,
             "theme": "default",
+            "ollama_url": "http://localhost:11434",
+            "ai_model": "qwen2.5:3b",
+            "ai_draft_first": True,
         },
         init=False,
         repr=False,
@@ -60,6 +66,9 @@ class Config:
             "history_limit": "Integer between 1 and 100",
             "confirm_before_send": "true or false",
             "theme": f"One of: {', '.join(VALID_THEMES)}",
+            "ollama_url": "Ollama API URL (default: http://localhost:11434)",
+            "ai_model": "Ollama model name (default: qwen2.5:3b)",
+            "ai_draft_first": "true or false",
         },
         init=False,
         repr=False,
@@ -167,7 +176,15 @@ class Config:
     @staticmethod
     def valid_keys() -> list[str]:
         """Return the list of user-facing setting keys."""
-        return ["download_dir", "history_limit", "confirm_before_send", "theme"]
+        return [
+            "download_dir",
+            "history_limit",
+            "confirm_before_send",
+            "theme",
+            "ollama_url",
+            "ai_model",
+            "ai_draft_first",
+        ]
 
     # ------------------------------------------------------------------ #
     #  Internal helpers
@@ -189,13 +206,13 @@ class Config:
                 raise ValueError("history_limit must be between 1 and 100.")
             return val
 
-        if key == "confirm_before_send":
+        if key in ("confirm_before_send", "ai_draft_first"):
             low = raw.strip().lower()
             if low in ("true", "1", "yes", "on"):
                 return True
             if low in ("false", "0", "no", "off"):
                 return False
-            raise ValueError("confirm_before_send must be true or false.")
+            raise ValueError(f"{key} must be true or false.")
 
         if key == "theme":
             low = raw.strip().lower()
@@ -211,6 +228,12 @@ class Config:
                 raise ValueError("download_dir cannot be empty.")
             return str(Path(stripped).expanduser())
 
+        if key in ("ollama_url", "ai_model"):
+            stripped = raw.strip()
+            if not stripped:
+                raise ValueError(f"{key} cannot be empty.")
+            return stripped
+
         return raw  # pragma: no cover
 
     def _clamp_values(self) -> None:
@@ -221,3 +244,9 @@ class Config:
             self.theme = self._DEFAULTS["theme"]
         if not isinstance(self.confirm_before_send, bool):
             self.confirm_before_send = self._DEFAULTS["confirm_before_send"]
+        if not isinstance(self.ai_draft_first, bool):
+            self.ai_draft_first = self._DEFAULTS["ai_draft_first"]
+        if not self.ollama_url:
+            self.ollama_url = self._DEFAULTS["ollama_url"]
+        if not self.ai_model:
+            self.ai_model = self._DEFAULTS["ai_model"]

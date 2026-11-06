@@ -8,7 +8,9 @@ import pytest
 
 from app.credentials import (
     clear_credentials,
+    load_bot_token,
     load_credentials,
+    save_bot_token,
     save_credentials,
 )
 
@@ -76,3 +78,16 @@ class TestCredentialsStorage:
 
         # Second clear returns False
         assert clear_credentials(cred_file) is False
+
+    def test_save_and_load_bot_token(self, tmp_path):
+        cred_file = tmp_path / ".credentials"
+        save_bot_token("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", cred_file)
+        token = load_bot_token(cred_file)
+        assert token == "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+
+    def test_save_credentials_preserves_bot_token(self, tmp_path):
+        cred_file = tmp_path / ".credentials"
+        save_bot_token("my_bot_token_value", cred_file)
+        save_credentials(12345, "my_hash", cred_file)
+        assert load_bot_token(cred_file) == "my_bot_token_value"
+        assert load_credentials(cred_file) == (12345, "my_hash")

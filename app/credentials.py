@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 
 CREDENTIALS_DIR = Path.home() / ".config" / "telegram-cli"
@@ -64,8 +64,65 @@ def load_credentials(file_path: Path | None = None) -> Tuple[int, str] | None:
     return None
 
 
+def load_bot_token(file_path: Path | None = None) -> str | None:
+    """
+    Retrieve Telegram bot token from environment or secure storage.
+
+    Order of precedence:
+    1. Environment variables: TELEGRAM_BOT_TOKEN or BOT_TOKEN
+    2. Local .env file in the project root
+    3. User credentials file (~/.config/telegram-cli/.credentials)
+    """
+    # 1. Environment variables
+    env_token = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+
+    # 2. Local .env file
+    project_env = PROJECT_ROOT / ".env"
+    if project_env.exists():
+        token = _parse_env_file_for_key(project_env, ("TELEGRAM_BOT_TOKEN", "BOT_TOKEN"))
+        if token:
+            return token
+
+    # 3. Credentials file
+    target = file_path or CREDENTIALS_FILE
+    if target.exists():
+        try:
+            content = target.read_text(encoding="utf-8")
+            data = json.loads(content)
+            bot_token = str(data.get("bot_token", "")).strip()
+            if bot_token:
+                return bot_token
+        except (json.JSONDecodeError, ValueError, TypeError, OSError):
+            pass
+
+    return None
+
+
+def save_bot_token(bot_token: str, file_path: Path | None = None) -> Path:
+    """
+    Save bot token to credentials file, preserving existing credentials.
+    """
+    target = file_path or CREDENTIALS_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, Any] = {}
+    if target.exists():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    data["bot_token"] = bot_token.strip()
+    return _write_credentials_file(target, data)
+
+
 def save_credentials(
-    api_id: int, api_hash: str, file_path: Path | None = None
+    api_id: int,
+    api_hash: str,
+    file_path: Path | None = None,
+    bot_token: str | None = None,
 ) -> Path:
     """
     Save credentials with strict 0600 permissions (user read/write only).
@@ -75,14 +132,29 @@ def save_credentials(
     target = file_path or CREDENTIALS_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    data = json.dumps({"api_id": api_id, "api_hash": api_hash.strip()}, indent=2)
+    data: dict[str, Any] = {}
+    if target.exists():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
 
-    # Use os.open to guarantee 0600 creation mode atomically
+    data["api_id"] = api_id
+    data["api_hash"] = api_hash.strip()
+    if bot_token is not None:
+        data["bot_token"] = bot_token.strip()
+
+    return _write_credentials_file(target, data)
+
+
+def _write_credentials_file(target: Path, data: dict[str, Any]) -> Path:
+    """Write data to target with atomic 0600 permissions."""
+    content = json.dumps(data, indent=2)
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     fd = os.open(str(target), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
+            fh.write(content)
             fh.write("\n")
     except BaseException:
         try:
@@ -91,7 +163,6 @@ def save_credentials(
             pass
         raise
 
-    # Enforce 0600 permissions in case the file already existed
     os.chmod(target, 0o600)
     return target
 
@@ -110,6 +181,24 @@ def clear_credentials(file_path: Path | None = None) -> bool:
         except OSError:
             pass
     return False
+
+
+def _parse_env_file_for_key(path: Path, keys: tuple[str, ...]) -> str | None:
+    """Parse a specific key from a .env file safely."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, val = line.split("=", 1)
+        k = k.strip()
+        if k in keys:
+            return val.strip().strip("'\"")
+    return None
 
 
 def _parse_env_file(path: Path) -> Tuple[int, str] | None:

@@ -11,12 +11,19 @@ from getpass import getpass
 
 from telethon import TelegramClient
 
+from pathlib import Path
+
 from app.cli import CLI
 from app.config import Config
-from app.credentials import load_credentials, save_credentials
+from app.credentials import load_bot_token, load_credentials, save_credentials
+from app.services.ai import AIAssistantService
+from app.services.bot import AIBotService
+from app.services.messaging import MessagingService
 
 
-SESSION = "telegram_session"
+PROJECT_ROOT = Path(__file__).resolve().parent
+SESSION = str(PROJECT_ROOT / "telegram_session")
+BOT_SESSION = str(PROJECT_ROOT / "bot_session")
 
 
 async def get_or_prompt_credentials() -> tuple[int, str]:
@@ -61,20 +68,61 @@ async def get_or_prompt_credentials() -> tuple[int, str]:
 
 
 async def main() -> None:
-    """Entry point: authenticate and launch the interactive CLI."""
+    """Entry point: authenticate and launch the interactive CLI or bot daemon."""
     api_id, api_hash = await get_or_prompt_credentials()
 
     config = Config.load()
     client = TelegramClient(SESSION, api_id, api_hash)
+    bot_service: AIBotService | None = None
+    bot_client: TelegramClient | None = None
 
     try:
         await client.start()
         print("\nConnected to Telegram.")
 
-        cli = CLI(client, config)
+        # Check for bot token and launch AI Assistant Bot
+        bot_token = load_bot_token()
+        if bot_token:
+            bot_client = TelegramClient(BOT_SESSION, api_id, api_hash)
+            messaging = MessagingService(client)
+            ai_service = AIAssistantService(
+                messaging,
+                ollama_url=config.ollama_url,
+                model=config.ai_model,
+                draft_first=config.ai_draft_first,
+            )
+            bot_service = AIBotService(bot_client, client, ai_service)
+            try:
+                await bot_service.start(bot_token)
+                print(
+                    f"AI Assistant Bot online: @{bot_service.bot_username} "
+                    f"(Model: {config.ai_model}, restricted to @{bot_service.owner_username})"
+                )
+            except Exception as exc:
+                print(f"Notice: Could not start AI Bot: {exc}")
+
+        # If --bot flag is passed, run in standalone daemon mode
+        if "--bot" in sys.argv:
+            if not bot_service or not bot_service.is_running:
+                print("Error: AI Bot is not running. Please verify your bot token.")
+                return
+            print(
+                f"\nAI Assistant Bot daemon running as @{bot_service.bot_username}.\n"
+                "You can now chat with your bot from Telegram Desktop / Mobile.\n"
+                "Press Ctrl+C to exit."
+            )
+            await client.run_until_disconnected()
+            return
+
+        cli = CLI(client, config, bot_service=bot_service)
         await cli.run()
 
     finally:
+        if bot_service:
+            try:
+                await bot_service.stop()
+            except Exception:
+                pass
         await client.disconnect()
 
 

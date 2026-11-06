@@ -4,8 +4,7 @@ venv/
 env/
 
 # Telegram session files
-*.session
-*.session-journal
+*.session*
 
 # Python
 __pycache__/

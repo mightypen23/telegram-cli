@@ -33,7 +33,10 @@ class TestConfigDefaults:
         assert "history_limit" in keys
         assert "confirm_before_send" in keys
         assert "theme" in keys
-        assert len(keys) == 4
+        assert "ollama_url" in keys
+        assert "ai_model" in keys
+        assert "ai_draft_first" in keys
+        assert len(keys) == 7
 
     def test_to_dict(self):
         cfg = Config()
