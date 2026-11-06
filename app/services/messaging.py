@@ -764,7 +764,7 @@ class MessagingService:
     @staticmethod
     def display_name_for_entity(entity: Any) -> str:
         """Extract a human-readable name from a Telethon entity."""
-        if getattr(entity, "is_self", False):
+        if getattr(entity, "is_self", False) is True:
             return "Saved Messages"
         name = getattr(entity, "title", None)
         if not name:
