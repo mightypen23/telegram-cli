@@ -451,6 +451,66 @@ class TestFolderManagement:
         assert d_grp in res
         assert d_excluded not in res
 
+    async def test_get_folder_dialogs_unlimited(self, service):
+        from app.services.messaging import FolderInfo
+        from telethon.tl import types
+
+        # Create 150 dialogs
+        dialogs = []
+        include_peers = []
+        for i in range(1, 151):
+            peer = types.InputPeerChannel(channel_id=1000 + i, access_hash=0)
+            include_peers.append(peer)
+            d = MagicMock()
+            d.id = 1000 + i
+            d.archived = False
+            dialogs.append(d)
+
+        flt = types.DialogFilter(
+            id=3,
+            title="MassFolder",
+            pinned_peers=[],
+            include_peers=include_peers,
+            exclude_peers=[],
+        )
+        folder = FolderInfo(id=3, name="MassFolder", filter_obj=flt)
+        service._client.get_dialogs = AsyncMock(return_value=dialogs)
+
+        res = await service.get_folder_dialogs(folder, limit=None)
+        assert len(res) == 150
+        service._client.get_dialogs.assert_called_once_with(limit=None)
+
+    async def test_get_folder_dialogs_missing_peer_fallback(self, service):
+        from app.services.messaging import FolderInfo
+        from telethon.tl import types
+
+        p_missing = types.InputPeerChannel(channel_id=55555, access_hash=0)
+        flt = types.DialogFilter(
+            id=4,
+            title="InactiveChats",
+            pinned_peers=[],
+            include_peers=[p_missing],
+            exclude_peers=[],
+        )
+        folder = FolderInfo(id=4, name="InactiveChats", filter_obj=flt)
+
+        # get_dialogs does NOT contain the missing peer
+        service._client.get_dialogs = AsyncMock(return_value=[])
+
+        # get_entity succeeds for the missing peer
+        missing_entity = MagicMock()
+        missing_entity.id = 55555
+        missing_entity.title = "Old Channel"
+        missing_entity.first_name = None
+        missing_entity.last_name = None
+        missing_entity.username = "oldchan"
+        service._client.get_entity = AsyncMock(return_value=missing_entity)
+
+        res = await service.get_folder_dialogs(folder, limit=None)
+        assert len(res) == 1
+        assert res[0].name == "Old Channel"
+        assert res[0].entity == missing_entity
+
 
 class TestMassArchiveAndUnarchive:
     """Test archive_chats and unarchive_chats."""

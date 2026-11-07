@@ -49,6 +49,33 @@ class FolderInfo:
         )
 
 
+class PseudoDialog:
+    """Fallback dialog wrapper for entities not present in recent dialogs."""
+
+    def __init__(self, entity: Any) -> None:
+        self.entity = entity
+        try:
+            self.id = utils.get_peer_id(entity)
+        except Exception:
+            self.id = getattr(entity, "id", 0)
+        self.name = MessagingService.display_name_for_entity(entity)
+        self.unread_count = 0
+        self.archived = False
+        self.is_user = getattr(entity, "is_user", False) or type(entity).__name__ == "User"
+        self.is_group = (
+            getattr(entity, "is_group", False)
+            or type(entity).__name__ in ("Chat", "ChatForbidden")
+            or bool(getattr(entity, "megagroup", False))
+        )
+        self.is_channel = (
+            getattr(entity, "is_channel", False)
+            or type(entity).__name__ == "Channel"
+        )
+
+    def __repr__(self) -> str:
+        return f"PseudoDialog(id={self.id}, name={self.name!r})"
+
+
 def parse_chat_targets(args: list[str]) -> list[str]:
     """
     Parse a list of chat targets supporting:
@@ -100,7 +127,7 @@ class MessagingService:
         self._dialogs = await self._client.get_dialogs(**kwargs)
         return self._dialogs
 
-    async def get_archived_dialogs(self, limit: int = 50) -> list[Any]:
+    async def get_archived_dialogs(self, limit: int | None = 50) -> list[Any]:
         """Fetch archived dialogs and cache them."""
         return await self.get_dialogs(limit=limit, folder=1)
 
@@ -200,8 +227,51 @@ class MessagingService:
                 return f
         return None
 
+    def _extract_peer_ids(self, peer: Any) -> set[int]:
+        """Safely extract peer IDs (both marked and bare ID variants)."""
+        ids: set[int] = set()
+        if peer is None:
+            return ids
+        if isinstance(peer, (int, str)):
+            s = str(peer).strip()
+            if s.lstrip("-").isdigit():
+                val = int(s)
+                ids.add(val)
+                try:
+                    bare_id, _ = utils.resolve_id(val)
+                    ids.add(bare_id)
+                except Exception:
+                    pass
+            return ids
+
+        if isinstance(peer, types.InputPeerSelf):
+            me_id = getattr(self._client, "_self_id", None)
+            if me_id:
+                ids.add(me_id)
+            return ids
+
+        try:
+            pid = utils.get_peer_id(peer)
+            ids.add(pid)
+            try:
+                bare_id, _ = utils.resolve_id(pid)
+                ids.add(bare_id)
+            except Exception:
+                pass
+        except Exception:
+            for attr in ("user_id", "channel_id", "chat_id"):
+                val = getattr(peer, attr, None)
+                if val is not None:
+                    ids.add(val)
+                    try:
+                        bare_id, _ = utils.resolve_id(val)
+                        ids.add(bare_id)
+                    except Exception:
+                        pass
+        return ids
+
     async def get_folder_dialogs(
-        self, folder: FolderInfo, limit: int = 100
+        self, folder: FolderInfo, limit: int | None = 100
     ) -> list[Any]:
         """Fetch dialogs that belong to a folder."""
         if folder.is_default:
@@ -214,33 +284,108 @@ class MessagingService:
             return await self.get_dialogs(limit=limit, folder=0)
 
         all_dialogs = await self._client.get_dialogs(
-            limit=limit * 2 if limit else 200
+            limit=limit * 2 if limit else None
         )
 
         pinned_peers = getattr(df, "pinned_peers", []) or []
         include_peers = getattr(df, "include_peers", []) or []
         exclude_peers = getattr(df, "exclude_peers", []) or []
 
-        pinned_ids = [utils.get_peer_id(p) for p in pinned_peers]
-        include_ids = {utils.get_peer_id(p) for p in include_peers}
-        exclude_ids = {utils.get_peer_id(p) for p in exclude_peers}
-        pinned_set = set(pinned_ids)
+        pinned_ids: set[int] = set()
+        for p in pinned_peers:
+            pinned_ids.update(self._extract_peer_ids(p))
 
-        dialogs_by_id = {d.id: d for d in all_dialogs}
+        include_ids: set[int] = set()
+        for p in include_peers:
+            include_ids.update(self._extract_peer_ids(p))
+
+        exclude_ids: set[int] = set()
+        for p in exclude_peers:
+            exclude_ids.update(self._extract_peer_ids(p))
+
+        dialogs_by_id: dict[int, Any] = {}
+        for d in all_dialogs:
+            d_ids = self._extract_peer_ids(getattr(d, "id", None))
+            ent = getattr(d, "entity", None)
+            if ent:
+                d_ids.update(self._extract_peer_ids(getattr(ent, "id", None)))
+                d_ids.update(self._extract_peer_ids(ent))
+            for i in d_ids:
+                if i not in dialogs_by_id:
+                    dialogs_by_id[i] = d
+
         result: list[Any] = []
+        added_dialog_ids: set[int] = set()
 
         # Add pinned dialogs first in order
-        for pid in pinned_ids:
-            if pid in dialogs_by_id and pid not in exclude_ids:
-                result.append(dialogs_by_id[pid])
+        for p in pinned_peers:
+            p_ids = self._extract_peer_ids(p)
+            if p_ids & exclude_ids:
+                continue
+            matched_d = None
+            for i in p_ids:
+                if i in dialogs_by_id:
+                    matched_d = dialogs_by_id[i]
+                    break
+            if matched_d is not None:
+                d_key = getattr(matched_d, "id", id(matched_d))
+                if d_key not in added_dialog_ids:
+                    result.append(matched_d)
+                    added_dialog_ids.add(d_key)
+            else:
+                try:
+                    entity = await self._client.get_entity(p)
+                    d = PseudoDialog(entity)
+                    d_key = getattr(d, "id", id(d))
+                    if d_key not in added_dialog_ids:
+                        result.append(d)
+                        added_dialog_ids.add(d_key)
+                except Exception:
+                    pass
 
-        # Then other matching dialogs
+        # Then included dialogs
+        for p in include_peers:
+            p_ids = self._extract_peer_ids(p)
+            if p_ids & exclude_ids:
+                continue
+            matched_d = None
+            for i in p_ids:
+                if i in dialogs_by_id:
+                    matched_d = dialogs_by_id[i]
+                    break
+            if matched_d is not None:
+                d_key = getattr(matched_d, "id", id(matched_d))
+                if d_key not in added_dialog_ids:
+                    result.append(matched_d)
+                    added_dialog_ids.add(d_key)
+            else:
+                try:
+                    entity = await self._client.get_entity(p)
+                    d = PseudoDialog(entity)
+                    d_key = getattr(d, "id", id(d))
+                    if d_key not in added_dialog_ids:
+                        result.append(d)
+                        added_dialog_ids.add(d_key)
+                except Exception:
+                    pass
+
+        # Then other matching dialogs from category rules
         for d in all_dialogs:
-            if d.id in pinned_set or d.id in exclude_ids:
+            d_key = getattr(d, "id", id(d))
+            if d_key in added_dialog_ids:
+                continue
+
+            d_ids = self._extract_peer_ids(getattr(d, "id", None))
+            ent = getattr(d, "entity", None)
+            if ent:
+                d_ids.update(self._extract_peer_ids(getattr(ent, "id", None)))
+                d_ids.update(self._extract_peer_ids(ent))
+
+            if d_ids & exclude_ids:
                 continue
 
             matched = False
-            if d.id in include_ids:
+            if d_ids & include_ids:
                 matched = True
             else:
                 if getattr(df, "exclude_archived", False) and getattr(
@@ -283,8 +428,9 @@ class MessagingService:
 
             if matched:
                 result.append(d)
+                added_dialog_ids.add(d_key)
 
-        if limit:
+        if limit is not None:
             result = result[:limit]
 
         self._dialogs = result

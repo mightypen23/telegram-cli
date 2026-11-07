@@ -636,6 +636,7 @@ class TestCLIChatsAndFolders:
         assert "Chats in 'Work' (1):" in captured.out
         assert "Work Chat" in captured.out
         assert cli._view_mode == "chats"
+        cli._messaging.get_folder_dialogs.assert_called_once_with(f2, limit=None)
 
     async def test_open_folder_by_name(self, cli, capsys):
         from app.services.messaging import FolderInfo
@@ -652,6 +653,43 @@ class TestCLIChatsAndFolders:
         await cli._dispatch("open", ["Work"])
         captured = capsys.readouterr()
         assert "Chats in 'Work' (1):" in captured.out
+        cli._messaging.get_folder_dialogs.assert_called_once_with(f2, limit=None)
+
+    async def test_open_default_folder_shows_all_chats(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=0, name="All chats", is_default=True)
+        cli._messaging._folders = [f1]
+        cli._view_mode = "folders"
+
+        d1 = MagicMock()
+        d1.name = "Chat A"
+        d1.id = 301
+        d1.unread_count = 0
+        cli._messaging.get_folder_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("open", ["1"])
+        captured = capsys.readouterr()
+        assert "All Chats (1):" in captured.out
+        assert "Chat A" in captured.out
+        cli._messaging.get_folder_dialogs.assert_called_once_with(f1, limit=None)
+
+    async def test_open_archived_folder_shows_all_chats(self, cli, capsys):
+        from app.services.messaging import FolderInfo
+        f1 = FolderInfo(id=1, name="Archived", is_archived=True)
+        cli._messaging._folders = [f1]
+        cli._view_mode = "folders"
+
+        d1 = MagicMock()
+        d1.name = "Old Archive"
+        d1.id = 401
+        d1.unread_count = 0
+        cli._messaging.get_folder_dialogs = AsyncMock(return_value=[d1])
+
+        await cli._dispatch("open", ["1"])
+        captured = capsys.readouterr()
+        assert "Archived Chats (1):" in captured.out
+        assert "Old Archive" in captured.out
+        cli._messaging.get_folder_dialogs.assert_called_once_with(f1, limit=None)
 
     async def test_open_chat_in_chat_mode(self, cli, capsys):
         cli._view_mode = "chats"

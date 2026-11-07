@@ -442,13 +442,25 @@ class CLI:
     async def _open_folder(self, folder_target: str) -> None:
         folder = self._messaging.find_folder(folder_target)
         if folder.is_default:
-            await self._cmd_all_chats([])
+            dialogs = await self._messaging.get_folder_dialogs(folder, limit=None)
+            if not dialogs:
+                print("No conversations found.")
+                return
+            self._view_mode = "chats"
+            print(f"All Chats ({len(dialogs)}):")
+            self._print_dialogs(dialogs)
             return
         if folder.is_archived:
-            await self._cmd_archived([])
+            dialogs = await self._messaging.get_folder_dialogs(folder, limit=None)
+            if not dialogs:
+                print("No archived conversations found.")
+                return
+            self._view_mode = "chats"
+            print(f"Archived Chats ({len(dialogs)}):")
+            self._print_dialogs(dialogs)
             return
 
-        dialogs = await self._messaging.get_folder_dialogs(folder)
+        dialogs = await self._messaging.get_folder_dialogs(folder, limit=None)
         if not dialogs:
             print(f"No chats found in folder '{folder.name}'.")
             return
